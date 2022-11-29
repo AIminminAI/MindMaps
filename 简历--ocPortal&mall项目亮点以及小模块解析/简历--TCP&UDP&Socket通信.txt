@@ -1,0 +1,381 @@
+//参照四大基础笔记本中的socket部分和本一-java基础两个笔记本，一同复习这一部分
+
+
+package com.xinhuize.internal.modules.conmunication;
+
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.OutputStreamWriter;
+import java.io.Writer;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.text.SimpleDateFormat;
+
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+/*import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;*/
+
+import org.apache.log4j.Logger;
+import org.apache.xmlbeans.impl.xb.xsdschema.Public;
+import org.junit.Test;
+import org.slf4j.LoggerFactory;
+
+import com.xinhuize.internal.common.config.Global;
+
+import net.sf.json.JSONObject;
+
+
+public class CommunicationLysimeter {
+	
+	
+
+	// 实例化日志对象
+	private static Logger tcpCommunicationLogger = Logger.getLogger("tcpCommunicationLogger");
+	
+	private org.slf4j.Logger logger = LoggerFactory.getLogger(CommunicationLysimeter.class);// 实例化日志对象
+	private static int localPort = 20006;// 云服务器指定端口
+	// private static String host = "192.168.1.22"; // 要连接的服务端IP地址（目的端）
+	// private static int objPort = 20001; // 要连接的服务端对应的监听端口（目的端）
+	private static Socket socket;//代表客户端的Socket对象的引用，socket对象的构造器中传入client的IP和port，以及服务器端的port
+	private static ServerSocket server;//代表服务器端的ServerSocket对象的引用，ServerSocket对象的构造器中传入服务器的IP和端口号
+	// private static ArrayList<Socket> SocketList = new ArrayList<Socket>();
+	private static char endFlag = '}';// 判断该条数据是否发送完毕
+	private volatile static String dataStr = "";// 存储每条接收到的数据
+	// private Logger logger = LoggerFactory.getLogger(getClass());// 实例化日志对象
+	private Writer writer = null;// 写日志文件
+	private String filePath = Global.getCommunicationLogPath() + "/communicationTCPPassive.txt"; // 通讯文件地址
+//	 private String filePath = "D:\\communication.txt";
+	private SimpleDateFormat df = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss:SSS");// 设置日期格式
+	public static int count = 0;
+	public static byte[] buff;
+	public static List<Byte> list = new ArrayList<Byte>();
+	public static Map<String, Socket> socketMap;
+	static OutputStream os;
+
+	/**
+	 * 构造单例模式，启动服务器端口监听
+	 * 
+	 * @throws InterruptedException
+	 * @param void
+	 * @return void
+	 * 
+	 * 下面的getInstance()也可以这样写：
+	 * public static synchronized  CommunicationLysimeter getInstance(){//这种是用了单个synchronized这个同步方法，也可解决多线程的问题
+	 * 		if (instance == null) {
+	 * 			instance = new CommunicationLysimeter();
+	 * 		}
+	 *		return instance;// 返回实例对象
+	 * }
+	 * 以上这种是：通过增加synchronized关键字到getInstance()方法中，使得每个线程在进入这个方法之前必须要等到别的线程先离开该方法，保证了不会有两个线程可以同时进入此方法
+	 */
+	private volatile static CommunicationLysimeter instance;
+
+	private CommunicationLysimeter() {
+	}
+
+	/**
+	 * 双重检查加锁，相对于上面单个同步方法而言，会大大减少getInstance（）的时间耗费
+	 * @return
+	 * @author HuHongBo
+	 */
+	public static CommunicationLysimeter getInstance() {
+		if (instance == null) {//检查实例，如果CommunicationLysimeter这个实例不存在，就进入同步区块
+			synchronized (CommunicationLysimeter.class) {//只有第一次才彻底执行这里同步区块的代码
+				if (instance == null) {//进入区块后，在检查一次，如果CommunicationLysimeter实例仍为空，才创建CommunicationLysimeter实例
+					instance = new CommunicationLysimeter();
+				}
+			}
+		}
+		return instance;// 返回实例对象
+	}
+
+	/**
+	 * 
+	 * 
+	 * @author BinC HHB
+	 */
+	public void connect() {
+		socketMap = new HashMap<String, Socket>();
+		try {
+			server = new ServerSocket(localPort);//创建server端的ServerSocket对象，指定server端端口号
+			System.out.println("服务器已启动");
+			logger.info("服务器已启动");
+			while (true) {
+				// server尝试接收其他Socket的连接请求，server的accept方法是阻塞式的
+				socket = server.accept();//服务器socket对象创建后，调用accept（）方法开启等待着客户端的socket对象的连接，如有客户端过来链接，则返回客户端的socket对象（无客户端连接过来时，服务器端阻塞）
+				System.out.println("客户端连接成功");//打开调试工具，模拟客户端链接，打开则表示客户端链接成功
+				logger.info("客户端连接成功");
+				// 每接收到一个Socket就建立一个新的线程来处理它
+				// 通过Thread类创建线程对象，并将Runnable接口的子类对象（ServerThread）作为Thread类的构造函数的参数进行传递
+				new Thread(new ServerThread(socket)).start();
+				InetAddress address = socket.getInetAddress();//获取当前客户端的IP地址
+				System.out.println("当前客户端的IP为" + address.getHostAddress());
+				logger.info("当前客户端的IP为" + address.getHostAddress());
+				try {
+					Thread.sleep(100);
+				} catch (InterruptedException e) {
+					e.printStackTrace();
+				}
+			}
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+	}
+
+	/**
+	 * 用来处理Socket请求的 服务器线程处理类,创建线程有两种方式，extends Thread类以及implements Runnable
+	 */
+	static class ServerThread implements Runnable {
+		Socket socketClient; // clientSocket;和本线程相关的socket
+
+		public ServerThread(Socket socket) throws IOException {
+			this.socketClient = socket;// 获取客户端句柄
+		}
+
+		@Override
+		public void run() {
+			try {
+				handleSocket();// 先收后发
+			} catch (Exception e) {
+				e.printStackTrace();
+			}
+		}
+
+		/**
+		 * 接收客户端Socket
+		 * 
+		 * @throws IOException
+		 * @param void
+		 * @return void 线程执行的操作，响应客户端的请求
+		 */
+		private void handleSocket() throws IOException {
+			try {
+				// 接收数据
+				while (true) {
+					byte[] buffer = new byte[4096];
+					InputStream in = socketClient.getInputStream();// 获取客户端的输入流，并读取客户端的信息
+					int readL = in.read(buffer);//readL代表客户端的输入流中byte的个数
+					if (readL == 0)
+						break;
+					byte[] bufferData = new byte[readL];
+					System.arraycopy(buffer, 0, bufferData, 0, readL);// 消除多余字节
+					for (int i = 0; i < bufferData.length; i++) {
+						list.add(new Byte(bufferData[i]));
+					}
+					String strData = new String(bufferData);// 按UTF-8解码
+					if (strData.charAt(strData.length() - 1) == '}') {
+						byte[] by = new byte[list.size()];
+						for (int i = 0; i < list.size(); i++) {
+							by[i] = list.get(i);
+						}
+						list.clear();
+						String strResult = new String(by, "gbk");
+						CommunicationLysimeter.getInstance().receive(strResult, socketClient);
+					}
+					else {
+						InetAddress address = socketClient.getInetAddress();
+						tcpCommunicationLogger.info("当前客户端的IP为" + address.getHostAddress() + "数据包结尾缺少}");
+					}
+				}
+			} catch (Exception e) {
+				e.printStackTrace();
+			}
+		}
+	}
+
+	/**
+	 * 跟客户端Socket进行通信发送数据， 数据下发指令给设备
+	 * 
+	 * @param strData
+	 *            String型组包数据
+	 * @return void
+	 */
+
+	/*
+	 * public void sendDate(String id,String str) { Thread ServerThread = new
+	 * Thread(new Runnable() {
+	 * 
+	 * @Override public void run() { // TODO Auto-generated method stub try {
+	 * //JSONObject jsonObject = JSONObject.parseObject(str); //String r =
+	 * jsonObject.getString("shoppingCartItemList"); Socket currentSocket = new
+	 * Socket(); currentSocket = socketMap.get(id); os =
+	 * currentSocket.getOutputStream(); os.write(str.getBytes("UTF-8"));// //
+	 * 数据发送通过UTF-8加码，入接收方出现乱码则说明加码和解码方式不匹配 os.flush();
+	 * System.out.println("向客户 端发送"+ str+"成功"); while(true){ InputStream in =
+	 * currentSocket.getInputStream(); byte[] data = new byte[4096];
+	 * in.read(data); String staData = new String(data);
+	 * System.out.println("当前"+staData); } catch (Exception e) { // TODO
+	 * Auto-generated catch block e.printStackTrace();
+	 * System.out.println("向客户端发送"+ str+"失败"); } finally { if (writer != null)
+	 * try { writer.close(); } catch(IOException e) { // TODO Auto-generated
+	 * catch block e.printStackTrace(); } } } });ServerThread.start();
+	 * 
+	 * }
+	 */
+
+	/**
+	 * 
+	 * @param strData 代表下位机或者客户端传送到服务器端的消息
+	 * @param socketClient
+	 * @author HuHongBo
+	 */
+	public void receive(String strData, Socket socketClient) {
+		try {
+			// 处理接收到的字符串：去掉字符串中的换行符“\n”,回车符“\r”和字符串前后的空格
+			String dealedData = strData.replaceAll("\n", "").replaceAll("\r", "").trim();
+			if (dealedData.length() > 0) {// 数据不为空
+				String[] unpackData = dealedData.split("}");// 按反括号“}”将数据分割
+				if (dealedData.charAt(dealedData.length() - 1) == endFlag) {// 若数据接收完
+																			// flag="}"
+					for (int i = 0; i < unpackData.length; i++) {// 每个分割的数据后面都加一个“}”，表示数据接收完毕
+						unpackData[i] += "}";
+					}
+				} else {// 若数据没接收完，数据格式不对，则在最后一段不添加“}”，表示最后一段数据没接收完毕
+					for (int i = 0; i < unpackData.length - 1; i++) {
+						unpackData[i] += "}";
+					}
+				}
+				for (int i = 0; i < unpackData.length; i++) {
+					if (unpackData[i].charAt(unpackData[i].length() - 1) == endFlag) {
+						dataStr += unpackData[i];// 将这部分数据添加到缓存dataStr中
+						if (dataStr.charAt(0) == '{') {// 若该条数据格式正确
+							String strdata = "";
+							@SuppressWarnings("unused")
+							int index = 0;
+							if ((index = dataStr.lastIndexOf("{")) > 0) {
+								String[] sstr = null;
+								try {
+									sstr = dataStr.split("\\{");
+								} catch (Exception e) {
+									e.printStackTrace();
+								}
+								String resultStr = "{" + sstr[sstr.length - 1];
+								strdata = resultStr;
+							} else {
+								strdata = dataStr;
+							}
+							SubSystemShunt subSystemShunt = new SubSystemShunt();
+							dataStr = "";// 清空存数据的缓存
+							System.out.println("接收设备数据为" + strData);
+							int num = writeDataToFile(strdata, true);// 将接收到的数据写入文件
+							if (num == 1) {
+								this.addToMap(strData, socketClient);// 将设备ip地址和socket存放到map集合中
+								subSystemShunt.judgSystem(strdata); // 将该条数据传送到分流中
+							}
+						} else {
+							// 丢掉该条数据
+							dataStr = "";// 清空存数据的缓存
+						}
+					} else {// 若该条数据还未接收完
+						dataStr += unpackData[i]; // 将这部分数据添加到缓存dataStr中
+					}
+				}
+			} else {// 经过处理后的字符串为空，丢掉
+			}
+		} catch (Exception e) {
+		}
+	}
+
+	/**
+	 * 跟将接收到的流数据写入日志文件
+	 * 
+	 * @param data
+	 *            接收或发送的数据的数据
+	 * @param flag
+	 *            发送还是接收数据的标志
+	 * @return 0代表存储失败，1代表存储成功
+	 */
+	public synchronized int writeDataToFile(String data, boolean flag) {
+		try {
+			FileOutputStream fp = new FileOutputStream(filePath, true);
+			writer = new OutputStreamWriter(fp);// 开启输出流
+			writer.write(df.format(new Date()) + " ");// 将当前时间写入日志文件，其中new
+			String strFlag = flag ? "接收:" : "发送:";// 当flag为true时，表示接收数据，为false时，表示发送数据
+			writer.write(strFlag);// “发送：”或“接收：”写入文件
+			writer.write(data + " ");// 具体接收到的数据写入文件
+			writer.write("\r\n");
+			writer.flush();
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			// logger.info("通信数据写入文件出异常");
+			e.printStackTrace();
+			return 0;
+		} finally {
+			try {
+				writer.close();//关闭流信息
+			} catch (IOException e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			} // 断开连接时，关闭文件
+		}
+		return 1;
+	}
+
+	/**
+	 * 跟将接收到的原始数据流写入日志文件
+	 * 
+	 * @param originaldata
+	 *            未经粘包处理的原始数据
+	 * @param flag
+	 *            发送还是接收数据的标志
+	 * @return 0代表存储失败，1代表存储成功
+	 * @author YAB
+	 */
+	/*
+	 * public synchronized int writeOriginalDataToFile(String originaldata,
+	 * boolean flag) { try { FileOutputStream fp = new
+	 * FileOutputStream("D:/communicationTCPPassiveOriginalData.txt", true);
+	 * writer = new OutputStreamWriter(fp); writer.write(df.format(new Date()) +
+	 * " ");// 将当前时间写入日志文件，其中new Date()为当前时间 String strFlag = flag ? "接收:" :
+	 * "发送:";// 当flag为true时，表示接收数据，为false时，表示发送数据 writer.write(strFlag);//
+	 * “发送：”或“接收：”写入文件 writer.write(originaldata+ " ");// 具体接收到的数据写入文件
+	 * writer.write("\r\n"); writer.flush(); } catch (IOException e) { // TODO
+	 * Auto-generated catch block logger.info("通信数据写入文件出异常");
+	 * e.printStackTrace(); return 0; }finally{ try { writer.close(); } catch
+	 * (IOException e) { // TODO Auto-generated catch block e.printStackTrace();
+	 * }// 断开连接时，关闭文件 } return 1; }
+	 */
+
+	// 停止TCP通信
+	public void Stop() {
+		try {
+			if (server != null) {
+				server.close();//关闭流信息
+				socket.close();//关闭流信息
+			}
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+	}
+
+	/*
+	 * 将下位机的 IP地址放入到全局变量Map集合中 2021-03-06
+	 * 
+	 * @author zby
+	 */
+	public void addToMap(String strData, Socket socketClient) {
+		Map<String, Socket> map = Global.equipmentSocket;
+		// 将字符串转换成json对象
+		JSONObject json = JSONObject.fromObject(strData);
+		if (json.containsKey("sys")) {// 如果系统不为空
+			String equipmentId = null;
+			// 如果系统为蒸渗仪，则ID号键名为uID
+			if (json.getString("sys").equals("lys")) {
+				equipmentId = json.getString("uID");
+				// 如果系统为泥沙，则ID号键名为sID
+			} else if (json.getString("sys").equals("sed")) {
+				equipmentId = json.getString("sID");
+			}
+			map.put(equipmentId, socketClient);
+		}
+	}
+}
